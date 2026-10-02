@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.21)
 
 project(CuteDiscordPresence)
 
@@ -18,7 +18,8 @@ list(
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES
     ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
@@ -33,7 +34,7 @@ find_package(
   NAMES
   Qt6
   Qt5
-  COMPONENTS Core5Compat Widgets
+  COMPONENTS Widgets
   REQUIRED)
 set(QtX Qt${QT_VERSION_MAJOR})
 

@@ -105,10 +105,9 @@ protected slots:
   void initializeControlMenu();
 
 public:
-  virtual bool initialize(const QStringList &arguments,
-                          QString *error_string) override;
-  virtual void extensionsInitialized() override;
-  virtual ShutdownFlag aboutToShutdown() override;
+  void initialize() override;
+  void extensionsInitialized() override;
+  ShutdownFlag aboutToShutdown() override;
 
   QtCreatorDRPCPlugin();
   virtual ~QtCreatorDRPCPlugin() override;

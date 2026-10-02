@@ -137,39 +137,58 @@ void QtCreatorDRPCPlugin::setDrpcNotEditingState() {
 }
 
 void QtCreatorDRPCPlugin::syncDrpcToCurrentEditorState() {
-  const Core::IEditor *editor{Core::EditorManager::instance()->currentEditor()};
-  if (editor == nullptr)
+  // Qt Creator 20: query the current editor every time the timer fires.
+  // Keep the last file locally so the "time on current file" counter is
+  // reset immediately when the user switches tabs/files.
+  Core::IEditor *editor = Core::EditorManager::currentEditor();
+
+  if (editor == nullptr || editor->document() == nullptr) {
+    timeSpentOnCurrentEditor = 0;
     return setDrpcNotEditingState();
+  }
 
-  const ProjectExplorer::Project *active_project{
-      ProjectExplorer::ProjectTree::currentProject()};
-  const QString &active_project_name{
-      active_project != nullptr ? active_project->displayName() : "No Project"};
+  const Utils::FilePath active_file_path = editor->document()->filePath();
+  if (active_file_path.isEmpty()) {
+    timeSpentOnCurrentEditor = 0;
+    return setDrpcNotEditingState();
+  }
 
-  const Utils::FilePath &active_file_path{editor->document()->filePath()};
-  const QString &active_file_mime{MimeOverrider::OverrideMimeIfApplicable(
-      editor->document()->mimeType(), active_file_path)};
+  static Utils::FilePath previous_file_path;
+  if (previous_file_path != active_file_path) {
+    previous_file_path = active_file_path;
+    timeSpentOnCurrentEditor = 0;
+  }
 
-  const RichPresenceFileDescriptor &rpc_file_descriptor{
+  const ProjectExplorer::Project *active_project =
+      ProjectExplorer::ProjectTree::currentProject();
+  const QString active_project_name =
+      active_project != nullptr ? active_project->displayName() : "No Project";
+
+  const QString active_file_name = active_file_path.fileName();
+  const QString active_file_mime = MimeOverrider::OverrideMimeIfApplicable(
+      editor->document()->mimeType(), active_file_path);
+
+  const RichPresenceFileDescriptor rpc_file_descriptor =
       mimeTypeToRpcFileDescriptorMap.contains(active_file_mime)
           ? mimeTypeToRpcFileDescriptorMap[active_file_mime]
           : RichPresenceFileDescriptor{
-                "unknown", "Unknown File (" + active_file_mime + ")",
-                "Editing"}};
+                "unknown", "Unknown File (" + active_file_mime + ")", "Editing"};
 
   QDiscordRichPresence presence{};
 
-  presence.Details = QString{"%1 %2"}.arg(rpc_file_descriptor.WorkingVerb,
-                                          rpc_file_descriptor.Description);
-  presence.State =
-      QString{"%1/%2"}.arg(active_file_path.fileName(), active_project_name);
-  presence.LargeImageText = rpc_file_descriptor.WorkingVerb + " " +
-                            active_file_path.fileName() + " since " +
-                            QString::number(timeSpentOnCurrentEditor) +
-                            " seconds  (" + active_file_mime + ")";
+  // Visible Discord text. This is refreshed once per second, so changing the
+  // active Qt Creator tab updates the Rich Presence automatically.
+  presence.Details = QString{"%1 %2"}
+                         .arg(rpc_file_descriptor.WorkingVerb,
+                              active_file_name);
+  presence.State = QString{"Project: %1"}.arg(active_project_name);
+
   presence.LargeImageKey = rpc_file_descriptor.ImageKey;
+  presence.LargeImageText =
+      QString{"%1 - %2"}.arg(rpc_file_descriptor.Description, active_file_mime);
   presence.SmallImageKey = "qtcircle";
-  presence.SmallImageText = active_project_name;
+  presence.SmallImageText =
+      QString{"%1 | %2s"}.arg(active_project_name).arg(timeSpentOnCurrentEditor);
   presence.StartTimestamp = drpcActivatedTimestamp;
 
   presence.UpdateRichPresence();
@@ -177,55 +196,21 @@ void QtCreatorDRPCPlugin::syncDrpcToCurrentEditorState() {
 
 void QtCreatorDRPCPlugin::activateDiscordRichPresence() {
   deactivateDiscordRichPresence();
-  setDrpcNotEditingState();
 
+  drpcActivatedTimestamp = std::time(nullptr);
+  timeSpentOnCurrentEditor = 0;
+
+  // Qt Creator 20: keep the integration deliberately small and robust.
+  // Polling once per second avoids depending on EditorManager signal
+  // signatures that changed between Qt Creator 16 and 20.
   syncSignalConnections = {
-      connect(Core::EditorManager::instance(),
-              &Core::EditorManager::currentEditorChanged,
-              [&](Core::IEditor *editor) -> void {
-                Q_UNUSED(editor)
-                timeSpentOnCurrentEditor = NULL;
-                syncDrpcToCurrentEditorState();
-              }),
-
-      connect(ProjectExplorer::ProjectTree::instance(),
-              &ProjectExplorer::ProjectTree::currentProjectChanged,
-              [&](ProjectExplorer::Project *project) -> void {
-                Q_UNUSED(project)
-                syncDrpcToCurrentEditorState();
-              }),
-
-      connect(Core::EditorManager::instance(),
-              &Core::EditorManager::currentDocumentStateChanged,
-              [&]() -> void { syncDrpcToCurrentEditorState(); }),
-
-      connect(Core::EditorManager::instance(),
-              &Core::EditorManager::documentOpened,
-              [&](Core::IDocument *document) -> void {
-                Q_UNUSED(document)
-                syncDrpcToCurrentEditorState();
-              }),
-
-      connect(Core::EditorManager::instance(),
-              &Core::EditorManager::documentClosed,
-              [&](Core::IDocument *document) -> void {
-                Q_UNUSED(document)
-                syncDrpcToCurrentEditorState();
-              }),
-
-      connect(Core::EditorManager::instance(), &Core::EditorManager::saved,
-              [&](Core::IDocument *document) -> void {
-                Q_UNUSED(document)
-                syncDrpcToCurrentEditorState();
-              }),
-
-      connect(&drpcSyncTimer, &QTimer::timeout, [&]() -> void {
+      connect(&drpcSyncTimer, &QTimer::timeout, this, [this]() {
         ++timeSpentOnCurrentEditor;
         syncDrpcToCurrentEditorState();
       })};
 
+  syncDrpcToCurrentEditorState();
   drpcSyncTimer.start(1000);
-  drpcActivatedTimestamp = std::time(nullptr);
 }
 
 void QtCreatorDRPCPlugin::deactivateDiscordRichPresence() {
@@ -267,16 +252,10 @@ void QtCreatorDRPCPlugin::initializeControlMenu() {
       ->addMenu(drpc_control_menu);
 }
 
-bool QtCreatorDRPCPlugin::initialize(const QStringList &arguments,
-                                     QString *error_string) {
-  Q_UNUSED(arguments)
-  Q_UNUSED(error_string)
-
+void QtCreatorDRPCPlugin::initialize() {
   initializeDiscordRichPresence(GLOBAL_DISCORD_APPLICATION_ID);
   initializeControlMenu();
   activateDiscordRichPresence();
-
-  return true;
 }
 
 void QtCreatorDRPCPlugin::extensionsInitialized() {}
